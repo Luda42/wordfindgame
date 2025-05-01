@@ -1,43 +1,4 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -127,15 +88,19 @@
         #grid-wrapper {
             width: 100%;
             max-height: 70vh;
-            overflow: auto;
             display: flex;
             justify-content: center;
             align-items: center;
             margin-top: 60px; /* Adjusted to account for header */
+            /* Disable default scrolling */
+            overflow: hidden;
+            touch-action: none; /* Prevents default touch behaviors like scrolling */
         }
         #grid-container {
             display: grid;
             gap: 5px;
+            /* Ensure grid stays within bounds */
+            position: relative;
         }
         .grid-cell {
             width: 35px;
@@ -329,7 +294,7 @@
             <button class="menu-btn" id="back-btn">Back</button>
             <div id="timer">Time: 0s</div>
         </div>
-        <!-- Grid Wrapper: Contains the word search grid, allows scrolling if the grid is too large -->
+        <!-- Grid Wrapper: Contains the word search grid, scrolling controlled by two-finger gesture -->
         <div id="grid-wrapper">
             <!-- Grid Container: The actual grid of letters, dynamically generated as a CSS grid -->
             <div id="grid-container"></div>
@@ -393,6 +358,7 @@
             game: document.getElementById('game'),
             backBtn: document.getElementById('back-btn'),
             timer: document.getElementById('timer'),
+            gridWrapper: document.getElementById('grid-wrapper'),
             gridContainer: document.getElementById('grid-container'),
             wordListUl: document.getElementById('words'),
             hiScoreScreen: document.getElementById('hi-score-screen'),
@@ -419,7 +385,11 @@
             cellWordMap: new Map(),
             wordPositions: [],
             pendingTime: null,
-            timerInterval: null
+            timerInterval: null,
+            // Variables for two-finger scrolling
+            isTwoFingerScrolling: false,
+            lastTouchY: 0,
+            lastTouchX: 0
         };
 
         // Load and sanitize high scores from localStorage
@@ -677,6 +647,10 @@
                 }
             }
             debugLog("Grid generation complete");
+
+            // Reset scroll position after generating the grid
+            elements.gridWrapper.scrollTop = 0;
+            elements.gridWrapper.scrollLeft = 0;
         };
 
         const canPlaceWord = (word, row, col, direction) => {
@@ -767,10 +741,16 @@
             cells.forEach(cell => {
                 cell.addEventListener('click', handleCellClick);
                 cell.addEventListener('touchstart', (e) => {
-                    e.preventDefault();
-                    handleCellClick(e);
+                    // Only handle single-finger touch for cell selection
+                    if (e.touches.length === 1) {
+                        e.preventDefault();
+                        handleCellClick(e);
+                    }
                 }, { passive: false });
             });
+
+            // Set up two-finger scrolling
+            setupTwoFingerScrolling();
         };
 
         const handleCellClick = (e) => {
@@ -878,6 +858,56 @@
             if (isReverseVertical) return 'reverse-vertical';
             if (isReverseDiagonal) return 'reverse-diagonal';
             return false;
+        };
+
+        // === Two-Finger Scrolling ===
+        const setupTwoFingerScrolling = () => {
+            debugLog("Setting up two-finger scrolling");
+
+            elements.gridWrapper.addEventListener('touchstart', (e) => {
+                if (e.touches.length === 2) {
+                    e.preventDefault();
+                    state.isTwoFingerScrolling = true;
+                    // Use the average position of the two fingers
+                    state.lastTouchY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                    state.lastTouchX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                    debugLog(`Two-finger touch started at Y=${state.lastTouchY}, X=${state.lastTouchX}`);
+                }
+            }, { passive: false });
+
+            elements.gridWrapper.addEventListener('touchmove', (e) => {
+                if (state.isTwoFingerScrolling && e.touches.length === 2) {
+                    e.preventDefault();
+                    const currentY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                    const currentX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                    const deltaY = state.lastTouchY - currentY;
+                    const deltaX = state.lastTouchX - currentX;
+
+                    // Update scroll position
+                    elements.gridWrapper.scrollTop += deltaY;
+                    elements.gridWrapper.scrollLeft += deltaX;
+
+                    // Update last positions
+                    state.lastTouchY = currentY;
+                    state.lastTouchX = currentX;
+
+                    debugLog(`Two-finger scrolling: deltaY=${deltaY}, deltaX=${deltaX}, scrollTop=${elements.gridWrapper.scrollTop}, scrollLeft=${elements.gridWrapper.scrollLeft}`);
+                }
+            }, { passive: false });
+
+            elements.gridWrapper.addEventListener('touchend', (e) => {
+                if (state.isTwoFingerScrolling) {
+                    state.isTwoFingerScrolling = false;
+                    debugLog("Two-finger scrolling ended");
+                }
+            });
+
+            elements.gridWrapper.addEventListener('touchcancel', (e) => {
+                if (state.isTwoFingerScrolling) {
+                    state.isTwoFingerScrolling = false;
+                    debugLog("Two-finger scrolling cancelled");
+                }
+            });
         };
 
         // === UI Updates ===
